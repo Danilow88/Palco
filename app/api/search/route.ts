@@ -1,5 +1,6 @@
 import { requireIdentity } from "../../../cursor/identity.js";
 import { buildSearchQuery, decodeTitle, karaokeLikely, safeThumbnail } from "@/lib/youtube";
+import { clearSessionCookie, ensureAccess } from "@/lib/youtube-auth";
 import type { SearchHit } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -15,31 +16,33 @@ export async function GET(request: Request) {
   const identity = await requireIdentity(request);
   if (identity instanceof Response) return identity;
 
-  const key = process.env.YOUTUBE_API_KEY?.trim() ?? "";
   const url = new URL(request.url);
   const rawQuery = url.searchParams.get("q") ?? "";
   const mode = url.searchParams.get("mode") ?? "karaoke";
+  const access = await ensureAccess(request);
+
   if (!rawQuery.trim()) {
-    return Response.json({ configured: key.length > 0, results: [] });
+    const configured = access.ok ? true : access.reason !== "setup";
+    return json({ configured, connected: access.ok, results: [] }, access);
   }
-  if (!key) {
-    return Response.json({ configured: false, results: [], error: "missing-key" });
+  if (!access.ok) {
+    return json({ configured: access.reason !== "setup", connected: false, results: [], error: access.reason }, access);
   }
 
   const query = buildSearchQuery(rawQuery, mode);
   if (!query) {
-    return Response.json({ configured: true, results: [], error: "short-query" }, { status: 400 });
+    return json({ configured: true, connected: true, results: [], error: "short-query" }, access, 400);
   }
 
   const actor = identity.sub || String(identity.userId || "anon");
   if (!allow(actor)) {
-    return Response.json({ configured: true, results: [], error: "rate" }, { status: 429 });
+    return json({ configured: true, connected: true, results: [], error: "rate" }, access, 429);
   }
 
   const cacheKey = `${mode}:${query.toLowerCase()}`;
   const hit = cache.get(cacheKey);
   if (hit && Date.now() - hit.at < CACHE_MS) {
-    return Response.json({ configured: true, results: hit.results });
+    return json({ configured: true, connected: true, results: hit.results }, access);
   }
 
   const endpoint = new URL("https://www.googleapis.com/youtube/v3/search");
@@ -49,17 +52,26 @@ export async function GET(request: Request) {
   endpoint.searchParams.set("safeSearch", "moderate");
   endpoint.searchParams.set("maxResults", "8");
   endpoint.searchParams.set("q", query);
-  endpoint.searchParams.set("key", key);
 
   let response: Response;
   try {
-    response = await fetch(endpoint, { signal: AbortSignal.timeout(8000), cache: "no-store" });
+    response = await fetch(endpoint, {
+      headers: { authorization: `Bearer ${access.token}` },
+      signal: AbortSignal.timeout(8000),
+      cache: "no-store",
+    });
   } catch {
-    return Response.json({ configured: true, results: [], error: "upstream" }, { status: 502 });
+    return json({ configured: true, connected: true, results: [], error: "upstream" }, access, 502);
+  }
+  if (response.status === 401) {
+    return json(
+      { configured: true, connected: false, results: [], error: "connect" },
+      { ok: false, reason: "connect", cookie: clearSessionCookie(request) },
+    );
   }
   if (!response.ok) {
-    const status = response.status === 403 || response.status === 400 ? "rejected" : "upstream";
-    return Response.json({ configured: true, results: [], error: status }, { status: 502 });
+    const error = response.status === 403 ? "rejected" : "upstream";
+    return json({ configured: true, connected: true, results: [], error }, access, 502);
   }
 
   const payload = (await response.json()) as {
@@ -89,7 +101,17 @@ export async function GET(request: Request) {
   }
   cache.set(cacheKey, { at: Date.now(), results });
   if (cache.size > 200) cache.clear();
-  return Response.json({ configured: true, results });
+  return json({ configured: true, connected: true, results }, access);
+}
+
+function json(
+  body: unknown,
+  access: { ok: true; token: string; cookie?: string } | { ok: false; reason: string; cookie?: string },
+  status = 200,
+): Response {
+  const headers = new Headers({ "content-type": "application/json", "cache-control": "no-store" });
+  if (access.cookie) headers.append("set-cookie", access.cookie);
+  return new Response(JSON.stringify(body), { status, headers });
 }
 
 function allow(id: string): boolean {

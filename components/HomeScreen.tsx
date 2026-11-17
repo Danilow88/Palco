@@ -29,16 +29,31 @@ export default function HomeScreen({
   const [query, setQuery] = useState("");
   const [link, setLink] = useState("");
   const [configured, setConfigured] = useState<boolean | null>(null);
+  const [connected, setConnected] = useState(false);
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [searching, setSearching] = useState(false);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
     let gone = false;
-    fetch("/api/search", { cache: "no-store" })
+    const flag = new URLSearchParams(window.location.search).get("youtube");
+    if (flag === "denied") setMessage("A conexão com o YouTube foi cancelada.");
+    if (flag === "failed") setMessage("Não consegui concluir a conexão com o YouTube.");
+    if (flag === "auth") setMessage("Entra no Palco de novo e conecta a conta do YouTube.");
+    if (flag === "setup") {
+      setMessage("O Google ainda não reconhece este Palco. O login da conta precisa do cliente OAuth, cadastrado uma vez.");
+    }
+    if (flag) {
+      const clean = new URL(window.location.href);
+      clean.searchParams.delete("youtube");
+      window.history.replaceState(null, "", clean.pathname + clean.search);
+    }
+    fetch("/api/youtube/session", { cache: "no-store" })
       .then((response) => response.json())
-      .then((data: { configured?: boolean }) => {
-        if (!gone) setConfigured(Boolean(data.configured));
+      .then((data: { configured?: boolean; connected?: boolean }) => {
+        if (gone) return;
+        setConfigured(Boolean(data.configured));
+        setConnected(Boolean(data.connected));
       })
       .catch(() => {
         if (!gone) setConfigured(false);
@@ -54,8 +69,14 @@ export default function HomeScreen({
     setSearching(true);
     try {
       const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&mode=${mode}`, { cache: "no-store" });
-      const data = (await response.json()) as { configured?: boolean; results?: SearchHit[]; error?: string };
+      const data = (await response.json()) as {
+        configured?: boolean;
+        connected?: boolean;
+        results?: SearchHit[];
+        error?: string;
+      };
       setConfigured(Boolean(data.configured));
+      setConnected(Boolean(data.connected));
       setHits(data.results ?? []);
       if (data.error) setMessage(searchMessage(data.error));
       else if ((data.results ?? []).length === 0) setMessage("Nada com esse nome. Tenta outro jeito de escrever ou cola o link.");
@@ -74,6 +95,12 @@ export default function HomeScreen({
       return;
     }
     onYoutube({ videoId, title: "Vídeo do YouTube", channel: "", karaokeLikely: false });
+  }
+
+  async function disconnect() {
+    await fetch("/api/youtube/session", { method: "POST" });
+    setConnected(false);
+    setHits([]);
   }
 
   return (
@@ -100,9 +127,23 @@ export default function HomeScreen({
       <section className="block">
         <h2>YouTube</h2>
         <p className="note">
-          O vídeo toca no player oficial. A busca pede versão karaokê ou instrumental, porque um clipe comum não entrega o áudio
-          para tirar a voz.
+          O vídeo toca no player oficial. A busca usa a conta do YouTube que você conectar e pede a versão karaokê ou instrumental.
+          Um clipe comum continua com a voz, porque o player não entrega o áudio para separar.
         </p>
+        <div className="stack">
+          <a className="primary" href="/api/youtube/connect">
+            {connected ? "Trocar a conta do YouTube" : "Conectar conta do YouTube"}
+          </a>
+          {connected && (
+            <button className="ghost" type="button" onClick={() => void disconnect()}>
+              Desconectar
+            </button>
+          )}
+        </div>
+        {connected && <p className="note">Conta conectada. A busca sai por ela.</p>}
+        {configured === false && (
+          <p className="note">O botão abre o login do Google. Falta o cliente desse login para o Google aceitar o Palco.</p>
+        )}
         <div className="row" role="group" aria-label="Tipo de vídeo">
           {MODES.map((item) => (
             <button key={item.id} type="button" className={mode === item.id ? "chip on" : "chip"} onClick={() => setMode(item.id)}>
@@ -126,9 +167,6 @@ export default function HomeScreen({
             {searching ? "Procurando…" : "Buscar versão"}
           </button>
         </form>
-        {configured === false && (
-          <p className="note">Sem a chave da API do YouTube, a busca fica quieta. O link do vídeo continua valendo.</p>
-        )}
         <form className="search" onSubmit={openLink}>
           <label className="sr" htmlFor="link">
             Link do YouTube
@@ -218,11 +256,10 @@ export default function HomeScreen({
 }
 
 function searchMessage(code: string): string {
-  if (code === "missing-key") {
-    return "A busca precisa da chave da API do YouTube. Cola o link de um vídeo karaokê ou instrumental que eu toco agora.";
-  }
+  if (code === "connect") return "Conecta a conta do YouTube para buscar. O link do vídeo continua valendo.";
+  if (code === "setup") return "O login do Google ainda não está cadastrado neste Palco.";
   if (code === "rate") return "Muitas buscas seguidas. Espera um instante.";
-  if (code === "rejected") return "A chave do YouTube não autorizou a busca.";
+  if (code === "rejected") return "O YouTube recusou a busca desta conta.";
   if (code === "short-query") return "Escreve pelo menos duas letras.";
   return "A busca do YouTube não respondeu. Tenta de novo ou cola o link.";
 }

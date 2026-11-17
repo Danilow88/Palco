@@ -190,6 +190,12 @@ textarea { min-height: 160px; resize: vertical; line-height: 1.45; }
   box-shadow: 0 10px 30px rgba(255, 193, 77, 0.16);
 }
 
+a.primary {
+  display: block;
+  text-decoration: none;
+  color: var(--ink);
+}
+
 .primary:disabled { opacity: 0.55; }
 
 .ghost, .icon-btn {

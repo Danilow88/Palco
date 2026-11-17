@@ -4,6 +4,7 @@ import { anchorLine, currentLineIndex, parseLyricInput, shiftLines } from "../li
 import { describePitch, detectPitch, midiToFreq } from "../lib/pitch.ts";
 import { createAcc, finalize, phraseFor, pushFrame } from "../lib/score.ts";
 import { getSong, listSongs } from "../lib/songs.ts";
+import { callbackUrl, googleAuthUrl, open, seal } from "../lib/youtube-auth.ts";
 import { buildSearchQuery, karaokeLikely, parseYouTubeId, safeThumbnail, watchUrl } from "../lib/youtube.ts";
 
 describe("youtube", () => {
@@ -24,6 +25,28 @@ describe("youtube", () => {
     assert.equal(karaokeLikely("Luz do Palco karaoke"), true);
     assert.equal(karaokeLikely("Clipe oficial"), false);
     assert.match(safeThumbnail("dQw4w9WgXcQ", "https://evil.example/x"), /^https:\/\/i\.ytimg\.com\/vi\/dQw4w9WgXcQ\//);
+  });
+
+  it("sends the person to their YouTube account without an API key", async () => {
+    const url = new URL(
+      googleAuthUrl({
+        clientId: "client",
+        redirectUri: "http://127.0.0.1:3456/api/youtube/callback",
+        state: "state",
+        codeChallenge: "challenge",
+      }),
+    );
+    assert.equal(url.origin, "https://accounts.google.com");
+    assert.equal(url.searchParams.get("scope"), "https://www.googleapis.com/auth/youtube.readonly");
+    assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+    assert.equal(url.searchParams.has("key"), false);
+    assert.equal(url.searchParams.has("client_secret"), false);
+    assert.equal(callbackUrl("http://127.0.0.1:3456"), "http://127.0.0.1:3456/api/youtube/callback");
+    assert.equal(callbackUrl("javascript:alert(1)"), null);
+    assert.equal(callbackUrl("http://example.com"), null);
+    const sealed = await seal({ accessToken: "abc", refreshToken: "def", expiresAt: 10 }, "segredo");
+    assert.deepEqual(await open(sealed, "segredo"), { accessToken: "abc", refreshToken: "def", expiresAt: 10 });
+    assert.equal(await open(sealed, "outro"), null);
   });
 });
 
